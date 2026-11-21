@@ -8,7 +8,7 @@ namespace {
 
 [[nodiscard]] u64 popcount64(u64 x) noexcept {
 #if defined(__clang__) || defined(__GNUC__)
-    return static_cast<u64>(__builtin_popcountll(x));
+    return as<u64>(__builtin_popcountll(x));
 #else
     u64 c = 0;
     while (x != 0) {
@@ -37,7 +37,7 @@ CommStatus scramble(ArrayRef<u8> in_bits, ArrayRef<u8> poly, MutArrayRef<u8> sta
                 fb ^= (state[i - 1] & 1u);
             }
         }
-        const u8 yk = static_cast<u8>((in_bits[k] & 1u) ^ fb);
+        const u8 yk = as<u8>((in_bits[k] & 1u) ^ fb);
         out_bits[k] = yk;
         for (usize i = deg; i-- > 1;) {
             state[i] = state[i - 1];
@@ -57,14 +57,14 @@ CommStatus descramble(ArrayRef<u8> in_bits, ArrayRef<u8> poly, MutArrayRef<u8> s
         return CommStatus::kInvalidArgument;
     }
     for (usize k = 0; k < in_bits.size(); ++k) {
-        const u8 yk = static_cast<u8>(in_bits[k] & 1u);
+        const u8 yk = as<u8>(in_bits[k] & 1u);
         u8 fb = 0;
         for (usize i = 1; i <= deg; ++i) {
             if (poly[i] != 0) {
                 fb ^= (state[i - 1] & 1u);
             }
         }
-        out_bits[k] = static_cast<u8>(yk ^ fb);
+        out_bits[k] = as<u8>(yk ^ fb);
         for (usize i = deg; i-- > 1;) {
             state[i] = state[i - 1];
         }
@@ -85,7 +85,7 @@ ErrorStats bit_error_rate(ArrayRef<u64> a, ArrayRef<u64> b, i32 bits_per_symbol)
             mx = keel::max(mx, keel::max(a[i], b[i]));
         }
         k_bits = 1;
-        while (k_bits < 64 && (u64{1} << static_cast<u32>(k_bits)) <= mx) {
+        while (k_bits < 64 && (u64{1} << as<u32>(k_bits)) <= mx) {
             ++k_bits;
         }
     }
@@ -93,8 +93,8 @@ ErrorStats bit_error_rate(ArrayRef<u64> a, ArrayRef<u64> b, i32 bits_per_symbol)
     for (usize i = 0; i < n; ++i) {
         total += popcount64(a[i] ^ b[i]);
     }
-    const f64 total_bits = static_cast<f64>(n) * static_cast<f64>(k_bits);
-    const f64 ratio = (total_bits > 0.0) ? (static_cast<f64>(total) / total_bits) : 0.0;
+    const f64 total_bits = as<f64>(n) * as<f64>(k_bits);
+    const f64 ratio = (total_bits > 0.0) ? (as<f64>(total) / total_bits) : 0.0;
     return ErrorStats{total, ratio};
 }
 
@@ -109,7 +109,7 @@ ErrorStats sym_error_rate(ArrayRef<f64> a, ArrayRef<f64> b) noexcept {
             ++count;
         }
     }
-    return ErrorStats{count, static_cast<f64>(count) / static_cast<f64>(n)};
+    return ErrorStats{count, as<f64>(count) / as<f64>(n)};
 }
 
 } // namespace keel::comm

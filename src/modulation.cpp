@@ -10,31 +10,31 @@ namespace {
     if (mapping == SymbolOrder::kBinary) {
         return s;
     }
-    return static_cast<i32>(to_gray(static_cast<u32>(s))) % order;
+    return as<i32>(to_gray(as<u32>(s))) % order;
 }
 
 [[nodiscard]] i32 idx_to_symbol(i32 k, i32 order, SymbolOrder mapping) noexcept {
     if (mapping == SymbolOrder::kBinary) {
         return k;
     }
-    return static_cast<i32>(from_gray(static_cast<u32>(k))) % order;
+    return as<i32>(from_gray(as<u32>(k))) % order;
 }
 
 [[nodiscard]] f64 pam_amp(i32 s, i32 order, SymbolOrder mapping) noexcept {
     const i32 k = (mapping == SymbolOrder::kBinary)
                       ? s
-                      : static_cast<i32>(to_gray(static_cast<u32>(s)));
-    return 2.0 * static_cast<f64>(k) - static_cast<f64>(order - 1);
+                      : as<i32>(to_gray(as<u32>(s)));
+    return 2.0 * as<f64>(k) - as<f64>(order - 1);
 }
 
 [[nodiscard]] i32 pam_amp_to_symbol(f64 amp, i32 order, SymbolOrder mapping) noexcept {
-    i32 k = static_cast<i32>(keel::round(0.5 * (amp + static_cast<f64>(order - 1))));
+    i32 k = as<i32>(keel::round(0.5 * (amp + as<f64>(order - 1))));
     if (k < 0) k = 0;
     if (k > order - 1) k = order - 1;
     if (mapping == SymbolOrder::kBinary) {
         return k;
     }
-    return static_cast<i32>(from_gray(static_cast<u32>(k)));
+    return as<i32>(from_gray(as<u32>(k)));
 }
 
 struct QamGrid {
@@ -43,7 +43,7 @@ struct QamGrid {
 };
 
 [[nodiscard]] QamGrid factor_qam_grid(i32 order) noexcept {
-    i32 k = static_cast<i32>(keel::round(keel::sqrt(static_cast<f64>(order))));
+    i32 k = as<i32>(keel::round(keel::sqrt(as<f64>(order))));
     while (k > 1 && (order % k) != 0) {
         --k;
     }
@@ -58,10 +58,10 @@ CommStatus psk_mod(ArrayRef<i32> symbols, i32 order, f64 init_phase, SymbolOrder
         return CommStatus::kInvalidArgument;
     }
     const usize n = symbols.size();
-    const f64 dphi = kTau / static_cast<f64>(order);
+    const f64 dphi = kTau / as<f64>(order);
     for (usize i = 0; i < n; ++i) {
         const i32 k = symbol_to_idx(symbols[i], order, mapping);
-        const f64 theta = dphi * static_cast<f64>(k) + init_phase;
+        const f64 theta = dphi * as<f64>(k) + init_phase;
         out[i] = c64(keel::cos(theta), keel::sin(theta));
     }
     return CommStatus::kOk;
@@ -73,10 +73,10 @@ CommStatus psk_demod(ArrayRef<c64> samples, i32 order, f64 init_phase, SymbolOrd
         return CommStatus::kInvalidArgument;
     }
     const usize n = samples.size();
-    const f64 dphi = kTau / static_cast<f64>(order);
+    const f64 dphi = kTau / as<f64>(order);
     for (usize i = 0; i < n; ++i) {
         const f64 angle = keel::arg(samples[i]) - init_phase;
-        i32 k = static_cast<i32>(keel::round(angle / dphi));
+        i32 k = as<i32>(keel::round(angle / dphi));
         k = ((k % order) + order) % order;
         out[i] = idx_to_symbol(k, order, mapping);
     }
@@ -89,11 +89,11 @@ CommStatus dpsk_mod(ArrayRef<i32> symbols, i32 order, f64 phase_rot, SymbolOrder
         return CommStatus::kInvalidArgument;
     }
     const usize n = symbols.size();
-    const f64 dphi = kTau / static_cast<f64>(order);
+    const f64 dphi = kTau / as<f64>(order);
     f64 phase = phase_rot;
     for (usize i = 0; i < n; ++i) {
         const i32 k = symbol_to_idx(symbols[i], order, mapping);
-        phase += dphi * static_cast<f64>(k);
+        phase += dphi * as<f64>(k);
         out[i] = c64(keel::cos(phase), keel::sin(phase));
     }
     return CommStatus::kOk;
@@ -105,12 +105,12 @@ CommStatus dpsk_demod(ArrayRef<c64> samples, i32 order, f64 phase_rot, SymbolOrd
         return CommStatus::kInvalidArgument;
     }
     const usize n = samples.size();
-    const f64 dphi = kTau / static_cast<f64>(order);
+    const f64 dphi = kTau / as<f64>(order);
     f64 prev_phase = phase_rot;
     for (usize i = 0; i < n; ++i) {
         const f64 cur = keel::arg(samples[i]);
         const f64 diff = cur - prev_phase;
-        i32 k = static_cast<i32>(keel::round(diff / dphi));
+        i32 k = as<i32>(keel::round(diff / dphi));
         k = ((k % order) + order) % order;
         out[i] = idx_to_symbol(k, order, mapping);
         prev_phase = cur;
@@ -155,7 +155,7 @@ CommStatus qam_mod(ArrayRef<i32> symbols, i32 order, SymbolOrder mapping, bool u
     const QamGrid g = factor_qam_grid(order);
     f64 scale = 1.0;
     if (unit_power) {
-        const f64 pavg = static_cast<f64>((g.ki * g.ki - 1) + (g.kq * g.kq - 1)) / 3.0;
+        const f64 pavg = as<f64>((g.ki * g.ki - 1) + (g.kq * g.kq - 1)) / 3.0;
         scale = (pavg > 0.0) ? (1.0 / keel::sqrt(pavg)) : 1.0;
     }
     const usize n = symbols.size();
@@ -165,12 +165,12 @@ CommStatus qam_mod(ArrayRef<i32> symbols, i32 order, SymbolOrder mapping, bool u
         const i32 row = s % g.kq;
         const i32 gcol = (mapping == SymbolOrder::kBinary)
                              ? col
-                             : static_cast<i32>(to_gray(static_cast<u32>(col)));
+                             : as<i32>(to_gray(as<u32>(col)));
         const i32 grow = (mapping == SymbolOrder::kBinary)
                              ? row
-                             : static_cast<i32>(to_gray(static_cast<u32>(row)));
-        const f64 in_phase = (2.0 * static_cast<f64>(gcol) - static_cast<f64>(g.ki - 1)) * scale;
-        const f64 quad = (static_cast<f64>(g.kq - 1) - 2.0 * static_cast<f64>(grow)) * scale;
+                             : as<i32>(to_gray(as<u32>(row)));
+        const f64 in_phase = (2.0 * as<f64>(gcol) - as<f64>(g.ki - 1)) * scale;
+        const f64 quad = (as<f64>(g.kq - 1) - 2.0 * as<f64>(grow)) * scale;
         out[i] = c64(in_phase, quad);
     }
     return CommStatus::kOk;
@@ -184,23 +184,23 @@ CommStatus qam_demod(ArrayRef<c64> samples, i32 order, SymbolOrder mapping, bool
     const QamGrid g = factor_qam_grid(order);
     f64 scale = 1.0;
     if (unit_power) {
-        const f64 pavg = static_cast<f64>((g.ki * g.ki - 1) + (g.kq * g.kq - 1)) / 3.0;
+        const f64 pavg = as<f64>((g.ki * g.ki - 1) + (g.kq * g.kq - 1)) / 3.0;
         scale = (pavg > 0.0) ? (1.0 / keel::sqrt(pavg)) : 1.0;
     }
     const usize n = samples.size();
     for (usize i = 0; i < n; ++i) {
         const f64 in_phase = samples[i].real() / scale;
         const f64 quad = samples[i].imag() / scale;
-        i32 gcol = static_cast<i32>(keel::round(0.5 * (in_phase + static_cast<f64>(g.ki - 1))));
-        i32 grow = static_cast<i32>(keel::round(0.5 * (static_cast<f64>(g.kq - 1) - quad)));
-        gcol = keel::clamp(gcol, static_cast<i32>(0), g.ki - 1);
-        grow = keel::clamp(grow, static_cast<i32>(0), g.kq - 1);
+        i32 gcol = as<i32>(keel::round(0.5 * (in_phase + as<f64>(g.ki - 1))));
+        i32 grow = as<i32>(keel::round(0.5 * (as<f64>(g.kq - 1) - quad)));
+        gcol = keel::clamp(gcol, as<i32>(0), g.ki - 1);
+        grow = keel::clamp(grow, as<i32>(0), g.kq - 1);
         const i32 col = (mapping == SymbolOrder::kBinary)
                             ? gcol
-                            : static_cast<i32>(from_gray(static_cast<u32>(gcol)));
+                            : as<i32>(from_gray(as<u32>(gcol)));
         const i32 row = (mapping == SymbolOrder::kBinary)
                             ? grow
-                            : static_cast<i32>(from_gray(static_cast<u32>(grow)));
+                            : as<i32>(from_gray(as<u32>(grow)));
         out[i] = col * g.kq + row;
     }
     return CommStatus::kOk;
@@ -214,7 +214,7 @@ f64 modnorm(ArrayRef<c64> ref_constellation, NormMode mode, f64 target_power) no
         for (usize i = 0; i < n; ++i) {
             s += keel::norm(ref_constellation[i]);
         }
-        s /= static_cast<f64>(n);
+        s /= as<f64>(n);
         return (s > 0.0) ? keel::sqrt(target_power / s) : 1.0;
     }
     f64 pk = 0.0;

@@ -24,13 +24,13 @@ CommStatus rcos_design(f64 beta, usize span, usize sps, RcosShape shape,
         return CommStatus::kInvalidArgument;
     }
 
-    const f64 dt = 1.0 / static_cast<f64>(sps);
-    const f64 half = 0.5 * static_cast<f64>(n - 1);
+    const f64 dt = 1.0 / as<f64>(sps);
+    const f64 half = 0.5 * as<f64>(n - 1);
     const bool rrc = (shape == RcosShape::kSqrt);
 
     f64 energy = 0.0;
     for (usize i = 0; i < n; ++i) {
-        const f64 t = (static_cast<f64>(i) - half) * dt;
+        const f64 t = (as<f64>(i) - half) * dt;
         f64 v = 0.0;
         if (!rrc) {
             const f64 term = 2.0 * beta * t;
@@ -78,14 +78,14 @@ CommStatus gauss_design(f64 bt, usize span, usize sps, MutArrayRef<f64> out) noe
         return CommStatus::kInvalidArgument;
     }
 
-    const f64 centre = 0.5 * static_cast<f64>(1 + n);
+    const f64 centre = 0.5 * as<f64>(1 + n);
     const f64 alpha = keel::sqrt(kLn2 * 0.5) / bt;
     const f64 pre = keel::sqrt(kPi) / alpha;
-    const f64 sps_f = static_cast<f64>(sps);
+    const f64 sps_f = as<f64>(sps);
 
     f64 sum = 0.0;
     for (usize k = 1; k <= n; ++k) {
-        const f64 t = (static_cast<f64>(k) - centre) / sps_f;
+        const f64 t = (as<f64>(k) - centre) / sps_f;
         const f64 arg = kPi * t / alpha;
         const f64 v = pre * keel::exp(-(arg * arg));
         out[k - 1] = v;

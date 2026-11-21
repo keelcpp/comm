@@ -60,7 +60,7 @@ void test_modulation() {
     i32 syms16[16]{};
     c64 qmod[16]{};
     i32 qdem[16]{};
-    for (i32 i = 0; i < 16; ++i) syms16[static_cast<usize>(i)] = i;
+    for (i32 i = 0; i < 16; ++i) syms16[keel::as<usize>(i)] = i;
     CHECK(cm::qam_mod(syms16, 16, cm::SymbolOrder::kGray, true, qmod) == cm::CommStatus::kOk);
     CHECK(cm::qam_demod(qmod, 16, cm::SymbolOrder::kGray, true, qdem) == cm::CommStatus::kOk);
     f64 avg_p = 0.0;
