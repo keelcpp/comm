@@ -18,19 +18,63 @@ if(NOT TARGET keel::keel)
     FetchContent_Declare(
         keel
         GIT_REPOSITORY https://github.com/keelcpp/keel.git
-        GIT_TAG        b905b095c1b30d5162794c160b2841544a4a4e12
+        GIT_TAG        869a5c07a5d77341e5f6acbac5f8e024b274ea08
     )
     FetchContent_MakeAvailable(keel)
+endif()
+
+if(NOT TARGET keel::fft)
+    find_package(keel_fft QUIET CONFIG)
+endif()
+if(NOT TARGET keel::fft)
+    include(FetchContent)
+    set(KEEL_FFT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    if(KEEL_COMM_NO_EXCEPTIONS_RTTI)
+        set(KEEL_FFT_NO_EXCEPTIONS_RTTI ON CACHE BOOL "" FORCE)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../fft/CMakeLists.txt" AND NOT DEFINED FETCHCONTENT_SOURCE_DIR_KEEL_FFT)
+        set(FETCHCONTENT_SOURCE_DIR_KEEL_FFT "${CMAKE_CURRENT_SOURCE_DIR}/../fft" CACHE PATH "Local keel_fft checkout")
+    endif()
+    FetchContent_Declare(
+        keel_fft
+        GIT_REPOSITORY https://github.com/keelcpp/fft.git
+        GIT_TAG        740bed99088ffb27d58fa2aa8e70b9d66f59100f
+    )
+    FetchContent_MakeAvailable(keel_fft)
+endif()
+
+if(NOT TARGET keel::signal)
+    find_package(keel_signal QUIET CONFIG)
+endif()
+if(NOT TARGET keel::signal)
+    include(FetchContent)
+    set(KEEL_SIGNAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    if(KEEL_COMM_NO_EXCEPTIONS_RTTI)
+        set(KEEL_SIGNAL_NO_EXCEPTIONS_RTTI ON CACHE BOOL "" FORCE)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../signal/CMakeLists.txt" AND NOT DEFINED FETCHCONTENT_SOURCE_DIR_KEEL_SIGNAL)
+        set(FETCHCONTENT_SOURCE_DIR_KEEL_SIGNAL "${CMAKE_CURRENT_SOURCE_DIR}/../signal" CACHE PATH "Local keel_signal checkout")
+    endif()
+    FetchContent_Declare(
+        keel_signal
+        GIT_REPOSITORY https://github.com/keelcpp/signal.git
+        GIT_TAG        5bed6cccdcdc4d214141d34054d2aaea8d99b2d7
+    )
+    FetchContent_MakeAvailable(keel_signal)
 endif()
 
 add_library(keel_comm STATIC
     src/modulation.cpp
     src/pulse_compand.cpp
     src/scrambler_errors.cpp
+    src/block_coding.cpp
+    src/conv_coding.cpp
+    src/source_coding.cpp
+    src/fsk_ofdm_apsk.cpp
 )
 add_library(keel::comm ALIAS keel_comm)
 
-target_link_libraries(keel_comm PUBLIC keel::keel)
+target_link_libraries(keel_comm PUBLIC keel::keel PRIVATE keel::fft keel::signal)
 
 target_compile_features(keel_comm PUBLIC cxx_std_20)
 set_target_properties(keel_comm PROPERTIES
@@ -64,6 +108,7 @@ if(COMMAND keel_enforce_guidelines)
     keel_enforce_guidelines(keel_comm
         SCOPE ALL
         BAN_RAW_INTS ALL
+        BAN_RAW_FLOATS ALL
         HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
         STANDALONE_HEADERS ${KEEL_COMM_BUILD_TESTS}
         TEST_NAME test_guidelines_headers

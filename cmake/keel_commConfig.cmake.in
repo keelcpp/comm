@@ -2,6 +2,8 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(keel)
+find_dependency(keel_fft)
+find_dependency(keel_signal)
 
 include("${CMAKE_CURRENT_LIST_DIR}/keel_commTargets.cmake")
 
