@@ -141,7 +141,7 @@ CommStatus vitdec_hard(ArrayRef<u8> code_bits, ArrayRef<u32> next_states_col_maj
         rsym[t] = w;
     }
 
-    const u32 k_inf = ~u32{0};
+    const u32 k_inf = Limits<u32>::kMax;
     Array<u32> metric(num_states, k_inf, scratch.allocator());
     Array<u32> new_metric(num_states, k_inf, scratch.allocator());
     metric[0] = 0u;
