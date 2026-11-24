@@ -18,7 +18,7 @@ if(NOT TARGET keel::keel)
     FetchContent_Declare(
         keel
         GIT_REPOSITORY https://github.com/keelcpp/keel.git
-        GIT_TAG        869a5c07a5d77341e5f6acbac5f8e024b274ea08
+        GIT_TAG        5d80fa7d6984e7325fc8d5317c5db13830381429
     )
     FetchContent_MakeAvailable(keel)
 endif()
@@ -58,7 +58,7 @@ if(NOT TARGET keel::signal)
     FetchContent_Declare(
         keel_signal
         GIT_REPOSITORY https://github.com/keelcpp/signal.git
-        GIT_TAG        5bed6cccdcdc4d214141d34054d2aaea8d99b2d7
+        GIT_TAG        3168db63c7757a4df83151799671af1b72716b6e
     )
     FetchContent_MakeAvailable(keel_signal)
 endif()
@@ -71,6 +71,7 @@ add_library(keel_comm STATIC
     src/conv_coding.cpp
     src/source_coding.cpp
     src/fsk_ofdm_apsk.cpp
+    src/mil188_channel.cpp
 )
 add_library(keel::comm ALIAS keel_comm)
 

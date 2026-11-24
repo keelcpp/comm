@@ -308,6 +308,27 @@ void test_fsk_ofdm_apsk_analog() {
     for (usize i = 24; i < 104; ++i) CHECK_NEAR(rec_pm[i], msg_pm[i], 0.05);
 }
 
+void test_mil188_and_channel() {
+    const i32 orders[4] = {16, 32, 64, 256};
+    for (usize oi = 0; oi < 4; ++oi) {
+        const i32 m = orders[oi];
+        CHECK(cm::mil188_constellation(m).size() == keel::as<usize>(m));
+        keel::Array<i32> syms(keel::as<usize>(m), 0);
+        for (i32 k = 0; k < m; ++k) syms[keel::as<usize>(k)] = k;
+        keel::Array<c64> mod(keel::as<usize>(m), c64(0.0, 0.0));
+        keel::Array<i32> rec(keel::as<usize>(m), -1);
+        CHECK(cm::mil188_qam_mod(syms.as_ref(), m, mod.as_mut_ref()) == cm::CommStatus::kOk);
+        CHECK(cm::mil188_qam_demod(mod.as_ref(), m, rec.as_mut_ref()) == cm::CommStatus::kOk);
+        for (usize k = 0; k < keel::as<usize>(m); ++k) CHECK(rec[k] == syms[k]);
+    }
+    CHECK_NEAR(cm::qfunc(0.0), 0.5, 1e-12);
+    CHECK(cm::ber_awgn(10.0, cm::AwgnMod::kPsk, 2) < 1e-5);
+    CHECK(cm::ber_awgn(10.0, cm::AwgnMod::kQam, 16) < 0.01);
+    const f64 b[1] = {1.0};
+    const f64 a[1] = {1.0};
+    CHECK_NEAR(cm::noise_bw(b, a, 256, 1000.0), 1000.0, 1e-9);
+}
+
 } // namespace
 
 int main() {
@@ -318,6 +339,7 @@ int main() {
     test_conv_coding();
     test_source_coding();
     test_fsk_ofdm_apsk_analog();
+    test_mil188_and_channel();
 
     if (g_failures == 0) {
         std::printf("ALL keel::comm TESTS PASSED\n");

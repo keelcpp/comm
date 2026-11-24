@@ -324,4 +324,33 @@ struct DpcmOptResult {
 [[nodiscard]] CommStatus dpcm_opt(ArrayRef<f64> training, i32 order, ArrayRef<f64> init_codebook,
                                   usize init_k, DpcmOptResult& out, Allocator* alloc = nullptr);
 
+// ============================================================================
+// MIL-STD-188-110 QAM & Channel Metrics (qfunc, berawgn, noisebw)
+// ============================================================================
+
+// Returns MIL-STD-188-110 QAM constellation table for order in {16, 32, 64, 256} (empty otherwise).
+[[nodiscard]] ArrayRef<c64> mil188_constellation(i32 order) noexcept;
+
+[[nodiscard]] CommStatus mil188_qam_mod(ArrayRef<i32> symbols, i32 order,
+                                        MutArrayRef<c64> out) noexcept;
+[[nodiscard]] CommStatus mil188_qam_demod(ArrayRef<c64> samples, i32 order,
+                                          MutArrayRef<i32> out) noexcept;
+
+// Standard Gaussian Q-function Q(x) = 0.5 * erfc(x / sqrt(2)).
+[[nodiscard]] f64 qfunc(f64 x) noexcept;
+
+enum class AwgnMod : u8 {
+    kPsk = 0,
+    kQam,
+    kPam,
+    kFsk,
+    kDpsk,
+};
+
+// Analytical BER in AWGN for `ebno_db` (dB), modulation family `mod`, and constellation size `order`.
+[[nodiscard]] f64 ber_awgn(f64 ebno_db, AwgnMod mod, i32 order) noexcept;
+
+// Equivalent noise bandwidth of discrete filter H(z) = B(z) / A(z) sampled over `n_samp` points.
+[[nodiscard]] f64 noise_bw(ArrayRef<f64> num, ArrayRef<f64> den, i32 n_samp, f64 fs) noexcept;
+
 } // namespace keel::comm
