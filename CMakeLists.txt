@@ -38,7 +38,7 @@ if(NOT TARGET keel::fft)
     FetchContent_Declare(
         keel_fft
         GIT_REPOSITORY https://github.com/keelcpp/fft.git
-        GIT_TAG        8f27754ba6e5671439d97d3847479bdbf7ccfee7
+        GIT_TAG        739550655dfea621d6f666d189ce3bc0ed49efa5
     )
     FetchContent_MakeAvailable(keel_fft)
 endif()
@@ -58,7 +58,7 @@ if(NOT TARGET keel::signal)
     FetchContent_Declare(
         keel_signal
         GIT_REPOSITORY https://github.com/keelcpp/signal.git
-        GIT_TAG        fa3e723790a9715e4f07717ee299d9d6f0ea2eae
+        GIT_TAG        d24b276e5cd0e4ebd2dcbb70d1f90f8608e6d29e
     )
     FetchContent_MakeAvailable(keel_signal)
 endif()
