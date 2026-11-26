@@ -58,7 +58,7 @@ if(NOT TARGET keel::signal)
     FetchContent_Declare(
         keel_signal
         GIT_REPOSITORY https://github.com/keelcpp/signal.git
-        GIT_TAG        [main 1f09ab4] fix(signal): align quadratic chirp phase sign and bandstop ellipord with reference engine  3 files changed, 33 insertions(+), 10 deletions(-) 1f09ab4b3b668c10c9ed7ec94adc514c91f0e354
+        GIT_TAG        1f09ab4b3b668c10c9ed7ec94adc514c91f0e354
     )
     FetchContent_MakeAvailable(keel_signal)
 endif()
