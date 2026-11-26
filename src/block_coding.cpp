@@ -107,7 +107,7 @@ u64 default_prim_poly(i32 m) noexcept {
 
 CommStatus gen2par(ArrayRef<u8> mat_col_major, usize rows, usize cols, Array<u8>& out_col_major,
                    Allocator* alloc) {
-    if (rows == 0 || cols == 0 || rows >= cols || mat_col_major.size() < rows * cols) {
+    if (rows == 0 || cols == 0 || rows >= cols || mat_col_major.size() / cols < rows) {
         return CommStatus::kInvalidArgument;
     }
     const usize pcols = cols - rows;
@@ -164,7 +164,8 @@ CommStatus hammgen(i32 m, u64 prim_mask, BlockCodeMatrices& out, Allocator* allo
         return CommStatus::kInvalidArgument;
     }
     const u64 pmask = (prim_mask == 0ULL) ? default_prim_poly(m) : prim_mask;
-    if (pmask == 0ULL || (pmask & 1ULL) == 0ULL || (pmask & (1ULL << m)) == 0ULL) {
+    if (pmask == 0ULL || (pmask & 1ULL) == 0ULL || (pmask & (1ULL << as<u32>(m))) == 0ULL ||
+        (pmask >> as<u32>(m + 1)) != 0ULL) {
         return CommStatus::kInvalidArgument;
     }
 
@@ -195,6 +196,9 @@ CommStatus cyclpoly(i32 n, i32 k, CyclPolyMode mode, CyclPolyResult& out, Alloca
         return CommStatus::kInvalidArgument;
     }
     const i32 m = n - k;
+    if (m > 25) {
+        return CommStatus::kInvalidArgument;
+    }
     out.rows_col_major = Array<u8>(alloc);
     out.num_polys = 0;
     out.poly_len = as<usize>(m) + 1u;
@@ -378,11 +382,11 @@ CommStatus cyclgen(i32 n, ArrayRef<u8> gen_poly, bool systematic, BlockCodeMatri
 
 CommStatus syndtable(ArrayRef<u8> h_col_major, usize nk, usize n, MutArrayRef<u8> out_col_major,
                      Allocator* alloc) {
-    if (nk == 0 || n == 0 || nk > 24 || h_col_major.size() < nk * n) {
+    if (nk == 0 || n == 0 || nk > 24 || h_col_major.size() / n < nk) {
         return CommStatus::kInvalidArgument;
     }
     const usize num_synd = usize{1} << nk;
-    if (out_col_major.size() < num_synd * n) {
+    if (out_col_major.size() / n < num_synd) {
         return CommStatus::kInvalidArgument;
     }
 
@@ -425,8 +429,9 @@ CommStatus syndtable(ArrayRef<u8> h_col_major, usize nk, usize n, MutArrayRef<u8
 
 CommStatus block_encode(ArrayRef<u8> msg_words_row_major, usize num_words, ArrayRef<u8> g_col_major,
                         usize k, usize n, MutArrayRef<u8> code_words_row_major) noexcept {
-    if (k == 0 || n <= k || g_col_major.size() < k * n || msg_words_row_major.size() < num_words * k ||
-        code_words_row_major.size() < num_words * n) {
+    if (k == 0 || n <= k || g_col_major.size() / n < k ||
+        msg_words_row_major.size() / k < num_words ||
+        code_words_row_major.size() / n < num_words) {
         return CommStatus::kInvalidArgument;
     }
     for (usize w = 0; w < num_words; ++w) {
@@ -447,13 +452,17 @@ CommStatus block_decode(ArrayRef<u8> code_words_row_major, usize num_words,
                         ArrayRef<u8> g_col_major, ArrayRef<u8> h_col_major, usize k, usize n,
                         MutArrayRef<u8> msg_words_row_major, MutArrayRef<i32> err_counts,
                         Allocator* alloc) {
-    if (k == 0 || n <= k || g_col_major.size() < k * n || h_col_major.size() < (n - k) * n ||
-        code_words_row_major.size() < num_words * n || msg_words_row_major.size() < num_words * k ||
-        err_counts.size() < num_words) {
+    if (k == 0 || n <= k || g_col_major.size() / n < k || h_col_major.size() / n < (n - k) ||
+        code_words_row_major.size() / n < num_words ||
+        msg_words_row_major.size() / k < num_words || err_counts.size() < num_words) {
         return CommStatus::kInvalidArgument;
     }
     const usize nk = n - k;
     if (nk > 24) {
+        return CommStatus::kInvalidArgument;
+    }
+    const usize num_synd = usize{1} << nk;
+    if (num_synd > Limits<usize>::kMax / n) {
         return CommStatus::kInvalidArgument;
     }
 
@@ -472,7 +481,6 @@ CommStatus block_decode(ArrayRef<u8> code_words_row_major, usize num_words,
     const usize msg_off = first_k ? 0u : nk;
 
     ArenaTemp scratch = get_scratch(alloc);
-    const usize num_synd = usize{1} << nk;
     Array<u8> table(num_synd * n, 0u, scratch.allocator());
     const CommStatus st = syndtable(h_col_major, nk, n, table.as_mut_ref(), scratch.allocator());
     if (st != CommStatus::kOk) return st;

@@ -183,6 +183,9 @@ CommStatus mil188_qam_demod(ArrayRef<c64> samples, i32 order, MutArrayRef<i32> o
 f64 qfunc(f64 x) noexcept { return 0.5 * erfc(x * kInvSqrt2); }
 
 f64 ber_awgn(f64 ebno_db, AwgnMod mod, i32 order) noexcept {
+    if (is_nan(ebno_db) || order < 2) {
+        return Limits<f64>::quiet_nan();
+    }
     const f64 ebno = pow(10.0, ebno_db / 10.0);
     const f64 md = as<f64>(order);
     switch (mod) {
@@ -195,10 +198,13 @@ f64 ber_awgn(f64 ebno_db, AwgnMod mod, i32 order) noexcept {
         return (2.0 / k) * 0.5 * erfc(arg * kInvSqrt2);
     }
     case AwgnMod::kQam: {
+        if (order < 4) {
+            return Limits<f64>::quiet_nan();
+        }
         const f64 k = log2(md);
         const f64 rt = sqrt(md);
         const f64 base = erfc(sqrt(3.0 * k * ebno / (2.0 * (md - 1.0))));
-        return (1.0 - 1.0 / rt) * base / k;
+        return 2.0 * (1.0 - 1.0 / rt) * base / k;
     }
     case AwgnMod::kPam: {
         const f64 k = log2(md);
@@ -214,14 +220,21 @@ f64 ber_awgn(f64 ebno_db, AwgnMod mod, i32 order) noexcept {
 }
 
 f64 noise_bw(ArrayRef<f64> num, ArrayRef<f64> den, i32 n_samp, f64 fs) noexcept {
+    if (!is_finite(fs) || fs < 0.0) {
+        return Limits<f64>::quiet_nan();
+    }
+    if (num.empty() || den.empty() || fs == 0.0) {
+        return 0.0;
+    }
     if (n_samp <= 0) {
         n_samp = 1024;
     }
+    f64 h0_2 = 0.0;
     f64 h_max2 = 0.0;
     f64 sum_h2 = 0.0;
     const f64 nd = as<f64>(n_samp);
     for (i32 k = 0; k < n_samp; ++k) {
-        const f64 w = kPi * as<f64>(k) / nd;
+        const f64 w = kTau * as<f64>(k) / nd;
         const c64 z = polar(1.0, -w);
         c64 np(0.0, 0.0);
         c64 dp(0.0, 0.0);
@@ -236,12 +249,16 @@ f64 noise_bw(ArrayRef<f64> num, ArrayRef<f64> den, i32 n_samp, f64 fs) noexcept 
             zk *= z;
         }
         const f64 h2 = (abs(dp) > 0.0) ? norm(np / dp) : 0.0;
+        if (k == 0) {
+            h0_2 = h2;
+        }
         if (h2 > h_max2) {
             h_max2 = h2;
         }
         sum_h2 += h2;
     }
-    return (h_max2 > 0.0) ? (fs * sum_h2 / h_max2 / nd) : 0.0;
+    const f64 ref_h2 = (h0_2 > 0.0) ? h0_2 : h_max2;
+    return (ref_h2 > 0.0) ? (fs * sum_h2 / ref_h2 / nd) : 0.0;
 }
 
 } // namespace keel::comm

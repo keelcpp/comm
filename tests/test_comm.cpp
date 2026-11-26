@@ -12,14 +12,14 @@ i32 g_failures = 0;
 
 void check_true(bool cond, const char* expr, i32 line) {
     if (!cond) {
-        keel::eprintln("FAIL line {}: {}", line, expr);
+        keel::eprintln("FAIL line %d: %s", line, expr);
         ++g_failures;
     }
 }
 
 void check_near(f64 actual, f64 expected, f64 tol, const char* expr, i32 line) {
     if (!(keel::abs(actual - expected) <= tol)) {
-        keel::eprintln("FAIL line {}: {} (actual={}, expected={}, tol={})",
+        keel::eprintln("FAIL line %d: %s (actual=%.15g, expected=%.15g, tol=%.15g)",
                        line, expr, actual, expected, tol);
         ++g_failures;
     }
@@ -328,9 +328,418 @@ void test_mil188_and_channel() {
     CHECK_NEAR(cm::noise_bw(b, a, 256, 1000.0), 1000.0, 1e-9);
 }
 
+void test_hardening_regressions() {
+    const f64 nan_v = Limits<f64>::quiet_nan();
+    const f64 inf_v = Limits<f64>::infinity();
+
+    // 1. rcos_design beta == 0 (RRC and normal) and tiny beta: must be finite, unit energy, exact sinc
+    {
+        f64 h0[49]{}, h_tiny[49]{}, h_norm[49]{};
+        CHECK(cm::rcos_design(0.0, 6, 8, cm::RcosShape::kSqrt, h0) == cm::CommStatus::kOk);
+        CHECK(cm::rcos_design(1e-15, 6, 8, cm::RcosShape::kSqrt, h_tiny) == cm::CommStatus::kOk);
+        CHECK(cm::rcos_design(0.0, 6, 8, cm::RcosShape::kNormal, h_norm) == cm::CommStatus::kOk);
+        f64 e0 = 0.0;
+        for (usize i = 0; i < 49; ++i) {
+            CHECK(keel::is_finite(h0[i]));
+            CHECK_NEAR(h0[i], h_norm[i], 1e-14);
+            CHECK_NEAR(h0[i], h_tiny[i], 1e-12);
+            e0 += h0[i] * h0[i];
+        }
+        CHECK_NEAR(e0, 1.0, 1e-13);
+        CHECK(cm::rcos_design(nan_v, 6, 8, cm::RcosShape::kSqrt, h0) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::rcos_design(1.5, 6, 8, cm::RcosShape::kSqrt, h0) == cm::CommStatus::kInvalidArgument);
+    }
+
+    // 2. gauss_design extreme bt (no overflow) and invalid inputs
+    {
+        f64 g[25]{};
+        CHECK(cm::gauss_design(1e100, 3, 8, g) == cm::CommStatus::kOk);
+        f64 sum = 0.0;
+        for (usize i = 0; i < 25; ++i) {
+            CHECK(keel::is_finite(g[i]));
+            sum += g[i];
+        }
+        CHECK_NEAR(sum, 1.0, 1e-13);
+        CHECK(cm::gauss_design(nan_v, 3, 8, g) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::gauss_design(inf_v, 3, 8, g) == cm::CommStatus::kInvalidArgument);
+    }
+
+    // 3. compand validation + near-zero accuracy
+    {
+        const f64 tiny[2] = {-1e-12, 1e-12};
+        f64 c[2]{}, r[2]{};
+        CHECK(cm::compand(tiny, 255.0, 1.0, cm::CompandMode::kMuCompress, c) == cm::CommStatus::kOk);
+        CHECK(cm::compand(c, 255.0, 1.0, cm::CompandMode::kMuExpand, r) == cm::CommStatus::kOk);
+        CHECK_NEAR(r[0], tiny[0], 1e-24);
+        CHECK_NEAR(r[1], tiny[1], 1e-24);
+        CHECK(cm::compand(tiny, 0.5, 1.0, cm::CompandMode::kACompress, c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::compand(tiny, 0.5, 1.0, cm::CompandMode::kAExpand, c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::compand(tiny, nan_v, 1.0, cm::CompandMode::kMuCompress, c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::compand(tiny, 255.0, inf_v, cm::CompandMode::kMuCompress, c) == cm::CommStatus::kInvalidArgument);
+    }
+
+    // 4. Modulation domain & overflow/UB guards
+    {
+        const i32 bad_sym[2] = {0, 8};
+        const i32 neg_sym[2] = {-1, 0};
+        c64 out_c[2]{};
+        i32 out_i[2]{};
+        CHECK(cm::psk_mod(bad_sym, 8, 0.0, cm::SymbolOrder::kGray, out_c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::psk_mod(neg_sym, 8, 0.0, cm::SymbolOrder::kGray, out_c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::dpsk_mod(bad_sym, 8, 0.0, cm::SymbolOrder::kGray, out_c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::pam_mod(bad_sym, 8, 0.0, cm::SymbolOrder::kGray, out_c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::qam_mod(bad_sym, 4, cm::SymbolOrder::kGray, true, out_c) == cm::CommStatus::kInvalidArgument);
+        CHECK(cm::psk_mod(bad_sym, 16, nan_v, cm::SymbolOrder::kGray, out_c) == cm::CommStatus::kInvalidArgument);
+
+        const c64 extreme_c[2] = {c64(1e300, -1e300), c64(nan_v, inf_v)};
+        CHECK(cm::psk_demod(extreme_c, 8, 1e12, cm::SymbolOrder::kGray, out_i) == cm::CommStatus::kOk);
+        CHECK(out_i[0] >= 0 && out_i[0] < 8 && out_i[1] >= 0 && out_i[1] < 8);
+        CHECK(cm::pam_demod(extreme_c, 4, 0.0, cm::SymbolOrder::kGray, out_i) == cm::CommStatus::kOk);
+        CHECK(out_i[0] >= 0 && out_i[0] < 4 && out_i[1] >= 0 && out_i[1] < 4);
+        CHECK(cm::qam_demod(extreme_c, 16, cm::SymbolOrder::kGray, true, out_i) == cm::CommStatus::kOk);
+        CHECK(out_i[0] >= 0 && out_i[0] < 16 && out_i[1] >= 0 && out_i[1] < 16);
+
+        const c64 big_c[2] = {c64(1e200, 0.0), c64(0.0, -1e200)};
+        CHECK_NEAR(cm::modnorm(big_c, cm::NormMode::kAveragePower, 1.0), 1e-200, 1e-212);
+        CHECK_NEAR(cm::modnorm(big_c, cm::NormMode::kPeakPower, 4.0), 2e-200, 1e-212);
+        CHECK(keel::is_nan(cm::modnorm(big_c, cm::NormMode::kAveragePower, -1.0)));
+        CHECK(keel::is_nan(cm::modnorm(big_c, cm::NormMode::kAveragePower, nan_v)));
+    }
+
+    // 5. Block & conv coding bounds
+    {
+        cm::CyclPolyResult cp;
+        CHECK(cm::cyclpoly(100, 1, cm::CyclPolyMode::kFirst, cp) == cm::CommStatus::kInvalidArgument);
+        cm::BlockCodeMatrices bm;
+        CHECK(cm::hammgen(3, 0x1BULL, bm) == cm::CommStatus::kInvalidArgument);
+        const u64 huge_oct[1] = {7777777777777777777ULL};
+        cm::Trellis tr;
+        CHECK(cm::poly2trellis(3, huge_oct, tr) == cm::CommStatus::kInvalidArgument);
+    }
+
+    // 6. Source coding overflow & malformed dict guards
+    {
+        const u64 huge_cnt[2] = {1ULL << 31, 1ULL << 31};
+        const usize seq1[1] = {1u};
+        keel::Array<u8> bits;
+        CHECK(cm::arith_encode(seq1, huge_cnt, bits) == cm::CommStatus::kInvalidArgument);
+        usize dec0[1]{};
+        const u64 ok_cnt[2] = {10, 20};
+        CHECK(cm::arith_decode({}, ok_cnt, 0u, dec0) == cm::CommStatus::kOk);
+
+        const u32 bad_off[3] = {0u, 0u, 1u};
+        const u8 d_bits[1] = {1u};
+        keel::Array<usize> hdec;
+        CHECK(cm::huffman_decode(d_bits, bad_off, d_bits, hdec) == cm::CommStatus::kInvalidArgument);
+
+        const f64 bad_train[3] = {0.0, nan_v, 1.0};
+        cm::LloydsResult ll;
+        CHECK(cm::lloyds(bad_train, {}, 2, 1e-7, ll) == cm::CommStatus::kInvalidArgument);
+    }
+
+    // 7. FSK/OFDM/APSK/MSK guards & in-place OFDM
+    {
+        const i32 bad_fsk[1] = {4};
+        c64 fout[8]{};
+        CHECK(cm::fsk_mod(bad_fsk, 4, 100.0, 8, 1600.0, true, cm::SymbolOrder::kGray, fout) ==
+              cm::CommStatus::kInvalidArgument);
+        CHECK(cm::fsk_mod(bad_fsk, 4, nan_v, 8, 1600.0, true, cm::SymbolOrder::kGray, fout) ==
+              cm::CommStatus::kInvalidArgument);
+
+        c64 ofdm_ip[16]{};
+        c64 ofdm_orig[16]{};
+        for (usize i = 0; i < 16; ++i) {
+            ofdm_ip[i] = c64(as<f64>(i) - 7.5, as<f64>(i % 3) - 1.0);
+            ofdm_orig[i] = ofdm_ip[i];
+        }
+        CHECK(cm::ofdm_mod(ofdm_ip, 8, 2, 0, ofdm_ip) == cm::CommStatus::kOk);
+        CHECK(cm::ofdm_demod(ofdm_ip, 8, 2, 0, 0, ofdm_ip) == cm::CommStatus::kOk);
+        for (usize i = 0; i < 16; ++i) {
+            CHECK_NEAR(ofdm_ip[i].real(), ofdm_orig[i].real(), 1e-12);
+            CHECK_NEAR(ofdm_ip[i].imag(), ofdm_orig[i].imag(), 1e-12);
+        }
+
+        const usize rsz[1] = {4};
+        const f64 bad_rad[1] = {-1.0};
+        keel::Array<c64> apsk_c;
+        CHECK(cm::apsk_constellation(rsz, bad_rad, {}, apsk_c) == cm::CommStatus::kInvalidArgument);
+
+        const c64 msk_s[4] = {c64(1.0, 0.0), c64(0.0, 1.0), c64(-1.0, 0.0), c64(0.0, -1.0)};
+        u8 msk_b[4]{};
+        CHECK(cm::msk_demod_diff(msk_s, 1, 0.0, msk_b) == cm::CommStatus::kInvalidArgument);
+    }
+
+    // 8. ber_awgn & noise_bw exactness and edge cases
+    {
+        CHECK(keel::is_nan(cm::ber_awgn(5.0, cm::AwgnMod::kPsk, 1)));
+        CHECK(keel::is_nan(cm::ber_awgn(5.0, cm::AwgnMod::kQam, 2)));
+        CHECK(keel::is_nan(cm::ber_awgn(nan_v, cm::AwgnMod::kPsk, 2)));
+        CHECK_NEAR(cm::ber_awgn(inf_v, cm::AwgnMod::kPsk, 2), 0.0, 1e-15);
+        CHECK_NEAR(cm::ber_awgn(-inf_v, cm::AwgnMod::kPsk, 2), 0.5, 1e-15);
+
+        const f64 b[3] = {0.2, 0.4, 0.2};
+        const f64 a[3] = {1.0, -0.5, 0.25};
+        CHECK_NEAR(cm::noise_bw(b, a, 256, 1000.0), 406.25, 1e-11);
+        CHECK_NEAR(cm::noise_bw(b, {}, 256, 1000.0), 0.0, 1e-15);
+        CHECK(keel::is_nan(cm::noise_bw(b, a, 256, -1.0)));
+        CHECK(keel::is_nan(cm::noise_bw(b, a, 256, nan_v)));
+    }
+}
+
+void print_f64_vec(const char* key, ArrayRef<f64> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%.17g", v[i]);
+    }
+    keel::print("\n");
+}
+
+void print_c64_vec(const char* key, ArrayRef<c64> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%.17g,%.17g", v[i].real(), v[i].imag());
+    }
+    keel::print("\n");
+}
+
+void print_u8_vec(const char* key, ArrayRef<u8> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%u", as<u32>(v[i]));
+    }
+    keel::print("\n");
+}
+
+void print_u32_vec(const char* key, ArrayRef<u32> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%u", v[i]);
+    }
+    keel::print("\n");
+}
+
+void print_usize_vec(const char* key, ArrayRef<usize> v) {
+    keel::print("%s=", key);
+    for (usize i = 0; i < v.size(); ++i) {
+        if (i > 0) keel::print(",");
+        keel::print("%llu", as<u64>(v[i]));
+    }
+    keel::print("\n");
+}
+
+void dump_reference() {
+    // 1. PSK / DPSK / PAM / QAM / modnorm
+    const i32 s8[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    c64 psk8_g[8]{}, psk8_b[8]{};
+    (void)cm::psk_mod(s8, 8, kPi * 0.125, cm::SymbolOrder::kGray, psk8_g);
+    (void)cm::psk_mod(s8, 8, 0.0, cm::SymbolOrder::kBinary, psk8_b);
+    print_c64_vec("PSK8_GRAY", psk8_g);
+    print_c64_vec("PSK8_BIN", psk8_b);
+
+    const i32 s4[6] = {0, 3, 2, 1, 3, 0};
+    c64 dpsk4[6]{}, pam4_g[6]{}, pam4_b[6]{};
+    (void)cm::dpsk_mod(s4, 4, 0.25, cm::SymbolOrder::kGray, dpsk4);
+    (void)cm::pam_mod(s4, 4, 0.3, cm::SymbolOrder::kGray, pam4_g);
+    (void)cm::pam_mod(s4, 4, 0.0, cm::SymbolOrder::kBinary, pam4_b);
+    print_c64_vec("DPSK4_GRAY", dpsk4);
+    print_c64_vec("PAM4_GRAY", pam4_g);
+    print_c64_vec("PAM4_BIN", pam4_b);
+
+    i32 s16[16]{};
+    for (i32 i = 0; i < 16; ++i) s16[as<usize>(i)] = i;
+    c64 qam16_g[16]{}, qam16_u[16]{}, qam16_b[16]{};
+    (void)cm::qam_mod(s16, 16, cm::SymbolOrder::kGray, false, qam16_g);
+    (void)cm::qam_mod(s16, 16, cm::SymbolOrder::kGray, true, qam16_u);
+    (void)cm::qam_mod(s16, 16, cm::SymbolOrder::kBinary, false, qam16_b);
+    print_c64_vec("QAM16_GRAY_RAW", qam16_g);
+    print_c64_vec("QAM16_GRAY_UNIT", qam16_u);
+    print_c64_vec("QAM16_BIN_RAW", qam16_b);
+
+    c64 pam8_g[8]{};
+    (void)cm::pam_mod(s8, 8, 0.0, cm::SymbolOrder::kGray, pam8_g);
+    print_c64_vec("PAM8_GRAY", pam8_g);
+
+    i32 s64[64]{};
+    for (i32 i = 0; i < 64; ++i) s64[as<usize>(i)] = i;
+    c64 qam64_g[64]{};
+    (void)cm::qam_mod(s64, 64, cm::SymbolOrder::kGray, false, qam64_g);
+    print_c64_vec("QAM64_GRAY_RAW", qam64_g);
+
+    c64 fsk8_g[8 * 8]{};
+    (void)cm::fsk_mod(s8, 8, 100.0, 8, 16000.0, true, cm::SymbolOrder::kGray, fsk8_g);
+    print_c64_vec("FSK8_GRAY_CONT", fsk8_g);
+
+    const f64 mn_vals[2] = {
+        cm::modnorm(qam16_g, cm::NormMode::kAveragePower, 1.0),
+        cm::modnorm(qam16_g, cm::NormMode::kPeakPower, 2.0),
+    };
+    print_f64_vec("MODNORM_QAM16", mn_vals);
+
+    // 2. Pulse shaping & companding
+    f64 rrc_25[49]{}, rrc_0[49]{}, rc_50[49]{}, g_30[25]{};
+    (void)cm::rcos_design(0.25, 6, 8, cm::RcosShape::kSqrt, rrc_25);
+    (void)cm::rcos_design(0.0, 6, 8, cm::RcosShape::kSqrt, rrc_0);
+    (void)cm::rcos_design(0.5, 6, 8, cm::RcosShape::kNormal, rc_50);
+    (void)cm::gauss_design(0.3, 3, 8, g_30);
+    print_f64_vec("RCOS_SQRT_025", rrc_25);
+    print_f64_vec("RCOS_SQRT_000", rrc_0);
+    print_f64_vec("RCOS_NORM_050", rc_50);
+    print_f64_vec("GAUSS_030", g_30);
+
+    const f64 cx[6] = {-1.0, -0.4, -0.005, 0.0, 0.25, 0.9};
+    f64 mu_c[6]{}, mu_e[6]{}, a_c[6]{}, a_e[6]{};
+    (void)cm::compand(cx, 255.0, 1.0, cm::CompandMode::kMuCompress, mu_c);
+    (void)cm::compand(mu_c, 255.0, 1.0, cm::CompandMode::kMuExpand, mu_e);
+    (void)cm::compand(cx, 87.6, 1.0, cm::CompandMode::kACompress, a_c);
+    (void)cm::compand(a_c, 87.6, 1.0, cm::CompandMode::kAExpand, a_e);
+    print_f64_vec("COMPAND_MU_C", mu_c);
+    print_f64_vec("COMPAND_MU_E", mu_e);
+    print_f64_vec("COMPAND_A_C", a_c);
+    print_f64_vec("COMPAND_A_E", a_e);
+
+    // 3. Block coding
+    cm::BlockCodeMatrices ham;
+    (void)cm::hammgen(3, 0, ham);
+    print_u8_vec("HAMM3_H", ham.h.as_ref());
+    print_u8_vec("HAMM3_G", ham.g.as_ref());
+
+    cm::CyclPolyResult cp_min, cp_all;
+    (void)cm::cyclpoly(7, 4, cm::CyclPolyMode::kMin, cp_min);
+    (void)cm::cyclpoly(7, 4, cm::CyclPolyMode::kAll, cp_all);
+    print_u8_vec("CYCLPOLY_7_4_MIN", cp_min.rows_col_major.as_ref());
+    print_u8_vec("CYCLPOLY_7_4_ALL", cp_all.rows_col_major.as_ref());
+
+    const u8 gp[4] = {1, 1, 0, 1};
+    cm::BlockCodeMatrices cyc_s, cyc_n;
+    (void)cm::cyclgen(7, gp, true, cyc_s);
+    (void)cm::cyclgen(7, gp, false, cyc_n);
+    print_u8_vec("CYCLGEN_SYS_H", cyc_s.h.as_ref());
+    print_u8_vec("CYCLGEN_SYS_G", cyc_s.g.as_ref());
+    print_u8_vec("CYCLGEN_NOSYS_G", cyc_n.g.as_ref());
+
+    u8 stbl[8 * 7]{};
+    (void)cm::syndtable(ham.h.as_ref(), 3, 7, stbl);
+    print_u8_vec("SYNDTABLE_HAMM3", stbl);
+
+    // 4. Convolutional coding
+    const u64 gens[2] = {6, 7};
+    cm::Trellis tr;
+    (void)cm::poly2trellis(3, gens, tr);
+    print_u32_vec("TRELLIS_NEXT", tr.next_states.as_ref());
+    print_u32_vec("TRELLIS_OUT", tr.outputs.as_ref());
+    const u8 cmsg[10] = {1, 0, 1, 1, 0, 1, 0, 0, 0, 0};
+    u8 cenc[20]{}, cdec[10]{};
+    (void)cm::convenc(cmsg, tr.next_states.as_ref(), tr.outputs.as_ref(), tr.num_states, 2, cenc);
+    print_u8_vec("CONVENC_6_7", cenc);
+    cenc[3] ^= 1u;
+    (void)cm::vitdec_hard(cenc, tr.next_states.as_ref(), tr.outputs.as_ref(), tr.num_states, 2,
+                          true, cdec);
+    print_u8_vec("VITDEC_6_7", cdec);
+
+    // 5. Source coding (Huffman, Arithmetic, Quantiz, Lloyds, DPCM)
+    const f64 hprobs[4] = {0.5, 0.25, 0.125, 0.125};
+    cm::HuffmanDict hdict;
+    (void)cm::huffman_dict(hprobs, hdict);
+    const f64 havglen[1] = {hdict.avg_len};
+    print_f64_vec("HUFF_AVGLEN", havglen);
+
+    const u64 acnts[3] = {50, 30, 20};
+    const usize aseq[8] = {1, 2, 1, 3, 2, 1, 1, 3};
+    keel::Array<u8> abits;
+    (void)cm::arith_encode(aseq, acnts, abits);
+    print_u8_vec("ARITH_BITS", abits.as_ref());
+
+    const f64 qsig[5] = {-2.0, -0.5, 0.1, 0.9, 2.5};
+    const f64 qpart[3] = {-1.0, 0.0, 1.0};
+    const f64 qcb[4] = {-1.5, -0.5, 0.5, 1.5};
+    usize qidx[5]{};
+    f64 qval[5]{};
+    f64 qdist = 0.0;
+    (void)cm::quantiz(qsig, qpart, qcb, qidx, qval, qdist);
+    print_usize_vec("QUANTIZ_IDX", qidx);
+    print_f64_vec("QUANTIZ_VAL", qval);
+    const f64 qdist_v[1] = {qdist};
+    print_f64_vec("QUANTIZ_DIST", qdist_v);
+
+    f64 train[64]{};
+    for (usize i = 0; i < 64; ++i) train[i] = keel::sin(0.2 * as<f64>(i));
+    cm::LloydsResult ll;
+    (void)cm::lloyds(train, {}, 4, 1e-7, ll);
+    print_f64_vec("LLOYDS_PART", ll.partition.as_ref());
+    print_f64_vec("LLOYDS_CB", ll.codebook.as_ref());
+
+    cm::DpcmOptResult dopt;
+    (void)cm::dpcm_opt(train, 2, {}, 4, dopt);
+    print_f64_vec("DPCMOPT_PRED", dopt.predictor.as_ref());
+    print_f64_vec("DPCMOPT_CB", dopt.codebook.as_ref());
+
+    // 6. FSK, OFDM, APSK, PM/AM/FM/SSB
+    const i32 fsk_in[4] = {0, 2, 3, 1};
+    c64 fsk_cont[4 * 8]{}, fsk_disc[4 * 8]{};
+    (void)cm::fsk_mod(fsk_in, 4, 100.0, 8, 1600.0, true, cm::SymbolOrder::kBinary, fsk_cont);
+    (void)cm::fsk_mod(fsk_in, 4, 100.0, 8, 1600.0, false, cm::SymbolOrder::kBinary, fsk_disc);
+    print_c64_vec("FSK4_CONT", fsk_cont);
+    print_c64_vec("FSK4_DISC", fsk_disc);
+
+    c64 ofdm_in[16]{};
+    for (usize i = 0; i < 16; ++i) ofdm_in[i] = c64(as<f64>(i % 4) - 1.5, as<f64>(i / 4) - 1.5);
+    c64 ofdm_tx[20]{};
+    (void)cm::ofdm_mod(ofdm_in, 8, 2, 2, ofdm_tx);
+    print_c64_vec("OFDM_TX", ofdm_tx);
+
+    f64 xsig[32]{}, y_pm[32]{}, y_am[32]{}, y_fm[32]{}, y_ssb_l[32]{}, y_ssb_u[32]{};
+    for (usize i = 0; i < 32; ++i) xsig[i] = 0.4 * keel::sin(kTau * 50.0 * as<f64>(i) / 1000.0);
+    (void)cm::pm_mod(xsig, 200.0, 1000.0, 0.8, 0.2, y_pm);
+    (void)cm::am_mod(xsig, 200.0, 1000.0, 0.2, 1.5, y_am);
+    (void)cm::fm_mod(xsig, 200.0, 1000.0, 40.0, 0.2, y_fm);
+    (void)cm::ssb_mod(xsig, 200.0, 1000.0, 0.2, false, y_ssb_l);
+    (void)cm::ssb_mod(xsig, 200.0, 1000.0, 0.2, true, y_ssb_u);
+    print_f64_vec("PM_MOD", y_pm);
+    print_f64_vec("AM_MOD", y_am);
+    print_f64_vec("FM_MOD", y_fm);
+    print_f64_vec("SSB_LOWER", y_ssb_l);
+    print_f64_vec("SSB_UPPER", y_ssb_u);
+
+    // 7. qfunc, ber_awgn, noise_bw
+    const f64 qf_vals[5] = {
+        cm::qfunc(-2.0), cm::qfunc(0.0), cm::qfunc(1.0), cm::qfunc(2.5), cm::qfunc(5.0)
+    };
+    print_f64_vec("QFUNC", qf_vals);
+
+    const f64 ber_vals[7] = {
+        cm::ber_awgn(6.0, cm::AwgnMod::kPsk, 2),
+        cm::ber_awgn(6.0, cm::AwgnMod::kPsk, 4),
+        cm::ber_awgn(8.0, cm::AwgnMod::kPsk, 8),
+        cm::ber_awgn(10.0, cm::AwgnMod::kQam, 16),
+        cm::ber_awgn(8.0, cm::AwgnMod::kPam, 4),
+        cm::ber_awgn(6.0, cm::AwgnMod::kFsk, 2),
+        cm::ber_awgn(6.0, cm::AwgnMod::kDpsk, 2),
+    };
+    print_f64_vec("BER_AWGN", ber_vals);
+
+    const f64 nb_b1[3] = {0.2, 0.4, 0.2};
+    const f64 nb_a1[3] = {1.0, -0.5, 0.25};
+    const f64 nb_b2[4] = {0.25, 0.25, 0.25, 0.25};
+    const f64 nb_a2[1] = {1.0};
+    const f64 nb_vals[2] = {
+        cm::noise_bw(nb_b1, nb_a1, 256, 1000.0),
+        cm::noise_bw(nb_b2, nb_a2, 256, 800.0),
+    };
+    print_f64_vec("NOISE_BW", nb_vals);
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc >= 2 && keel::StringRef(argv[1]) == "--dump-ref") {
+        dump_reference();
+        return 0;
+    }
+
     test_modulation();
     test_pulse_and_compand();
     test_scrambler_and_errors();
@@ -339,11 +748,12 @@ int main() {
     test_source_coding();
     test_fsk_ofdm_apsk_analog();
     test_mil188_and_channel();
+    test_hardening_regressions();
 
     if (g_failures == 0) {
         keel::println("ALL keel::comm TESTS PASSED");
         return 0;
     }
-    keel::eprintln("TOTAL FAILURES: {}", g_failures);
+    keel::eprintln("TOTAL FAILURES: %d", g_failures);
     return 1;
 }

@@ -69,6 +69,17 @@ struct DecodeTrieNode {
 // Arithmetic Coding Bit Helpers
 // ============================================================================
 
+inline i32 ceil_log2_u64(u64 v) noexcept {
+    if (v <= 1ULL) return 0;
+    u64 x = v - 1ULL;
+    i32 bits = 0;
+    while (x > 0ULL) {
+        x >>= 1;
+        ++bits;
+    }
+    return bits;
+}
+
 inline u64 bitget(u64 x, i32 p) noexcept {
     return (x >> as<u32>(p - 1)) & 1ULL;
 }
@@ -193,8 +204,12 @@ CommStatus huffman_encode(ArrayRef<usize> sym_indices, ArrayRef<u32> offsets,
     usize total_bits = 0u;
     for (usize i = 0; i < sym_indices.size(); ++i) {
         const usize s = sym_indices[i];
-        if (s >= k || offsets[s + 1u] < offsets[s]) return CommStatus::kInvalidArgument;
-        total_bits += as<usize>(offsets[s + 1u] - offsets[s]);
+        if (s >= k || offsets[s + 1u] < offsets[s] || offsets[s + 1u] > dict_bits.size()) {
+            return CommStatus::kInvalidArgument;
+        }
+        const usize len = as<usize>(offsets[s + 1u] - offsets[s]);
+        if (len > Limits<usize>::kMax - total_bits) return CommStatus::kInvalidArgument;
+        total_bits += len;
     }
 
     out_bits = Array<u8>(alloc);
@@ -219,7 +234,9 @@ CommStatus huffman_decode(ArrayRef<u8> bits, ArrayRef<u32> offsets, ArrayRef<u8>
     nodes.push_back(DecodeTrieNode{});
 
     for (usize s = 0; s < k; ++s) {
-        if (offsets[s + 1u] < offsets[s]) return CommStatus::kInvalidArgument;
+        if (offsets[s + 1u] <= offsets[s] || offsets[s + 1u] > dict_bits.size()) {
+            return CommStatus::kInvalidArgument;
+        }
         i32 cur = 0;
         for (u32 pos = offsets[s]; pos < offsets[s + 1u]; ++pos) {
             const u8 bit = dict_bits[as<usize>(pos)];
@@ -268,12 +285,15 @@ CommStatus arith_encode(ArrayRef<usize> seq_1based, ArrayRef<u64> counts, Array<
     ArenaTemp scratch = get_scratch(alloc);
     Array<u64> cum(k + 1u, 0ULL, scratch.allocator());
     for (usize i = 0; i < k; ++i) {
-        if (counts[i] == 0ULL) return CommStatus::kInvalidArgument;
+        if (counts[i] == 0ULL || counts[i] > Limits<u64>::kMax - cum[i]) {
+            return CommStatus::kInvalidArgument;
+        }
         cum[i + 1u] = cum[i] + counts[i];
     }
     const u64 total = cum[k];
-    const i32 n = as<i32>(keel::ceil(keel::log2(as<f64>(total)))) + 2;
-    if (n <= 2 || n >= 63) return CommStatus::kInvalidArgument;
+    const i32 n = ceil_log2_u64(total) + 2;
+    // Require n <= 32 so span <= 2^32 and total <= 2^30 => span * total <= 2^62 < 2^64.
+    if (n <= 2 || n > 32) return CommStatus::kInvalidArgument;
 
     const u64 top_mask = 1ULL << as<u32>(n - 1);
     u64 dec_low = 0ULL;
@@ -340,12 +360,16 @@ CommStatus arith_decode(ArrayRef<u8> code_bits, ArrayRef<u64> counts, usize len,
     ArenaTemp scratch = get_scratch(alloc);
     Array<u64> cum(k + 1u, 0ULL, scratch.allocator());
     for (usize i = 0; i < k; ++i) {
-        if (counts[i] == 0ULL) return CommStatus::kInvalidArgument;
+        if (counts[i] == 0ULL || counts[i] > Limits<u64>::kMax - cum[i]) {
+            return CommStatus::kInvalidArgument;
+        }
         cum[i + 1u] = cum[i] + counts[i];
     }
     const u64 total = cum[k];
-    const i32 n = as<i32>(keel::ceil(keel::log2(as<f64>(total)))) + 2;
-    if (n <= 2 || n >= 63 || code_bits.size() < as<usize>(n)) {
+    const i32 n = ceil_log2_u64(total) + 2;
+    if (n <= 2 || n > 32) return CommStatus::kInvalidArgument;
+    if (len == 0u) return CommStatus::kOk;
+    if (code_bits.size() < as<usize>(n)) {
         return CommStatus::kInvalidArgument;
     }
 
@@ -437,11 +461,13 @@ CommStatus quantiz(ArrayRef<f64> sig, ArrayRef<f64> partition, ArrayRef<f64> cod
 
 CommStatus lloyds(ArrayRef<f64> training, ArrayRef<f64> init_codebook, usize init_k, f64 tol,
                   LloydsResult& out, Allocator* alloc) {
-    if (training.empty()) return CommStatus::kInvalidArgument;
+    if (training.empty() || !keel::is_finite(tol)) return CommStatus::kInvalidArgument;
 
+    if (!keel::is_finite(training[0])) return CommStatus::kInvalidArgument;
     f64 min_train = training[0];
     f64 max_train = training[0];
     for (usize i = 1; i < training.size(); ++i) {
+        if (!keel::is_finite(training[i])) return CommStatus::kInvalidArgument;
         if (training[i] < min_train) min_train = training[i];
         if (training[i] > max_train) max_train = training[i];
     }
@@ -449,6 +475,9 @@ CommStatus lloyds(ArrayRef<f64> training, ArrayRef<f64> init_codebook, usize ini
 
     Array<f64> codebook(alloc);
     if (!init_codebook.empty()) {
+        for (usize i = 0; i < init_codebook.size(); ++i) {
+            if (!keel::is_finite(init_codebook[i])) return CommStatus::kInvalidArgument;
+        }
         codebook = Array<f64>::from(init_codebook, alloc);
         keel::sort(codebook.as_mut_ref());
     } else if (init_k > 0u) {
@@ -493,7 +522,10 @@ CommStatus lloyds(ArrayRef<f64> training, ArrayRef<f64> init_codebook, usize ini
     const f64 ter_cond2 = Limits<f64>::kEpsilon * keel::abs(max_train);
     f64 rel_distor = (distor > ter_cond2) ? (keel::abs(distor - last_distor) / distor) : distor;
 
-    while (rel_distor > tol && rel_distor > ter_cond2) {
+    constexpr usize kMaxIter = 10000u;
+    usize iter = 0u;
+    while (rel_distor > tol && rel_distor > ter_cond2 && iter < kMaxIter) {
+        ++iter;
         for (usize i = 0; i < k; ++i) {
             f64 sum = 0.0;
             usize cnt = 0u;
@@ -612,6 +644,9 @@ CommStatus dpcm_opt(ArrayRef<f64> training, i32 order, ArrayRef<f64> init_codebo
                     DpcmOptResult& out, Allocator* alloc) {
     if (order < 1 || training.size() < as<usize>(order) + 3u) {
         return CommStatus::kInvalidArgument;
+    }
+    for (usize i = 0; i < training.size(); ++i) {
+        if (!keel::is_finite(training[i])) return CommStatus::kInvalidArgument;
     }
     ArenaTemp scratch = get_scratch(alloc);
     const usize ord_u = as<usize>(order);

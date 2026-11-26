@@ -11,11 +11,11 @@ namespace keel::comm {
 namespace {
 
 inline i32 fsk_sym_to_idx(i32 s, SymbolOrder mapping) noexcept {
-    return (mapping == SymbolOrder::kBinary) ? s : as<i32>(to_gray(as<u32>(s)));
+    return (mapping == SymbolOrder::kBinary) ? s : as<i32>(from_gray(as<u32>(s)));
 }
 
 inline i32 fsk_idx_to_sym(i32 k, SymbolOrder mapping) noexcept {
-    return (mapping == SymbolOrder::kBinary) ? k : as<i32>(from_gray(as<u32>(k)));
+    return (mapping == SymbolOrder::kBinary) ? k : as<i32>(to_gray(as<u32>(k)));
 }
 
 } // namespace
@@ -26,12 +26,16 @@ inline i32 fsk_idx_to_sym(i32 k, SymbolOrder mapping) noexcept {
 
 CommStatus fsk_mod(ArrayRef<i32> symbols, i32 order, f64 freq_sep, i32 nsamp, f64 fs,
                    bool continuous_phase, SymbolOrder mapping, MutArrayRef<c64> out) noexcept {
-    if (order < 2 || freq_sep <= 0.0 || nsamp <= 0 || fs <= 0.0) {
+    if (order < 2 || !keel::is_finite(freq_sep) || !(freq_sep > 0.0) || nsamp <= 0 ||
+        !keel::is_finite(fs) || !(fs > 0.0)) {
         return CommStatus::kInvalidArgument;
     }
     const usize ns = as<usize>(nsamp);
+    if (out.size() / ns < symbols.size()) return CommStatus::kInvalidArgument;
+    for (usize s = 0; s < symbols.size(); ++s) {
+        if (symbols[s] < 0 || symbols[s] >= order) return CommStatus::kInvalidArgument;
+    }
     const usize nout = symbols.size() * ns;
-    if (out.size() < nout) return CommStatus::kInvalidArgument;
     if (nout == 0) return CommStatus::kOk;
 
     f64 phase = 0.0;
@@ -42,9 +46,9 @@ CommStatus fsk_mod(ArrayRef<i32> symbols, i32 order, f64 freq_sep, i32 nsamp, f6
         for (usize n = 0; n < ns; ++n) {
             if (continuous_phase) {
                 out[s * ns + n] = c64(keel::cos(phase), keel::sin(phase));
-                phase += dphi;
+                phase = keel::fmod(phase + dphi, kTau);
             } else {
-                const f64 th = dphi * as<f64>(n);
+                const f64 th = dphi * as<f64>(s * ns + n);
                 out[s * ns + n] = c64(keel::cos(th), keel::sin(th));
             }
         }
@@ -54,10 +58,12 @@ CommStatus fsk_mod(ArrayRef<i32> symbols, i32 order, f64 freq_sep, i32 nsamp, f6
 
 CommStatus fsk_demod(ArrayRef<c64> samples, i32 order, f64 freq_sep, i32 nsamp, f64 fs,
                      SymbolOrder mapping, MutArrayRef<i32> out, Allocator* alloc) {
-    if (order < 2 || freq_sep <= 0.0 || nsamp <= 0 || fs <= 0.0) {
+    if (order < 2 || !keel::is_finite(freq_sep) || !(freq_sep > 0.0) || nsamp <= 0 ||
+        !keel::is_finite(fs) || !(fs > 0.0)) {
         return CommStatus::kInvalidArgument;
     }
     const usize ns = as<usize>(nsamp);
+    if (as<usize>(order) > Limits<usize>::kMax / ns) return CommStatus::kInvalidArgument;
     const usize nsym = samples.size() / ns;
     if (out.size() < nsym) return CommStatus::kInvalidArgument;
     if (nsym == 0) return CommStatus::kOk;
@@ -98,18 +104,27 @@ CommStatus fsk_demod(ArrayRef<c64> samples, i32 order, f64 freq_sep, i32 nsamp, 
 
 CommStatus ofdm_mod(ArrayRef<c64> in_col_major, usize nfft, usize nsym, usize cplen,
                     MutArrayRef<c64> out, Allocator* alloc) {
-    if (nfft == 0 || cplen > nfft || in_col_major.size() < nfft * nsym) {
+    if (nfft == 0 || cplen > nfft || nfft > Limits<usize>::kMax - cplen) {
         return CommStatus::kInvalidArgument;
     }
     const usize out_per_sym = nfft + cplen;
-    if (out.size() < out_per_sym * nsym) return CommStatus::kInvalidArgument;
+    if (in_col_major.size() / nfft < nsym || out.size() / out_per_sym < nsym) {
+        return CommStatus::kInvalidArgument;
+    }
     if (nsym == 0) return CommStatus::kOk;
 
     ArenaTemp scratch = get_scratch(alloc);
+    Array<c64> in_copy(scratch.allocator());
+    ArrayRef<c64> src = in_col_major;
+    if (out.data() == in_col_major.data()) {
+        in_copy = Array<c64>::from(ArrayRef<c64>(in_col_major.data(), nfft * nsym),
+                                   scratch.allocator());
+        src = in_copy.as_ref();
+    }
     Array<c64> buf(nfft, c64(0.0, 0.0), scratch.allocator());
 
     for (usize s = 0; s < nsym; ++s) {
-        for (usize i = 0; i < nfft; ++i) buf[i] = in_col_major[s * nfft + i];
+        for (usize i = 0; i < nfft; ++i) buf[i] = src[s * nfft + i];
         keel::fft::ifft_1d_inplace(buf.as_mut_ref());
 
         const usize dst_off = s * out_per_sym;
@@ -125,21 +140,28 @@ CommStatus ofdm_mod(ArrayRef<c64> in_col_major, usize nfft, usize nsym, usize cp
 
 CommStatus ofdm_demod(ArrayRef<c64> in, usize nfft, usize nsym, usize cplen, usize sym_offset,
                       MutArrayRef<c64> out_col_major, Allocator* alloc) {
-    if (nfft == 0 || sym_offset > cplen) {
+    if (nfft == 0 || sym_offset > cplen || nfft > Limits<usize>::kMax - cplen) {
         return CommStatus::kInvalidArgument;
     }
     const usize out_per_sym = nfft + cplen;
-    if (in.size() < out_per_sym * nsym || out_col_major.size() < nfft * nsym) {
+    if (in.size() / out_per_sym < nsym || out_col_major.size() / nfft < nsym) {
         return CommStatus::kInvalidArgument;
     }
     if (nsym == 0) return CommStatus::kOk;
 
     ArenaTemp scratch = get_scratch(alloc);
+    Array<c64> in_copy(scratch.allocator());
+    ArrayRef<c64> src = in;
+    if (out_col_major.data() == in.data()) {
+        in_copy = Array<c64>::from(ArrayRef<c64>(in.data(), out_per_sym * nsym),
+                                   scratch.allocator());
+        src = in_copy.as_ref();
+    }
     Array<c64> buf(nfft, c64(0.0, 0.0), scratch.allocator());
 
     for (usize s = 0; s < nsym; ++s) {
         const usize src_off = s * out_per_sym + sym_offset;
-        for (usize i = 0; i < nfft; ++i) buf[i] = in[src_off + i];
+        for (usize i = 0; i < nfft; ++i) buf[i] = src[src_off + i];
         keel::fft::fft_1d_inplace(buf.as_mut_ref());
         for (usize i = 0; i < nfft; ++i) out_col_major[s * nfft + i] = buf[i];
     }
@@ -160,8 +182,14 @@ CommStatus apsk_constellation(ArrayRef<usize> ring_sizes, ArrayRef<f64> radii,
 
     usize total = 0u;
     for (usize r = 0; r < r_cnt; ++r) {
-        if (ring_sizes[r] == 0u) return CommStatus::kInvalidArgument;
+        if (ring_sizes[r] == 0u || !keel::is_finite(radii[r]) || radii[r] < 0.0 ||
+            ring_sizes[r] > Limits<usize>::kMax - total) {
+            return CommStatus::kInvalidArgument;
+        }
         total += ring_sizes[r];
+    }
+    for (usize i = 0; i < phase_offsets.size(); ++i) {
+        if (!keel::is_finite(phase_offsets[i])) return CommStatus::kInvalidArgument;
     }
 
     out = Array<c64>(alloc);
@@ -226,8 +254,9 @@ CommStatus genqam_demod(ArrayRef<c64> samples, ArrayRef<c64> constellation,
 
 CommStatus pm_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 phase_dev, f64 init_phase,
                   MutArrayRef<f64> out) noexcept {
-    if (!(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc || !(phase_dev > 0.0) ||
-        out.size() < x.size()) {
+    if (!keel::is_finite(fs) || !keel::is_finite(fc) || !keel::is_finite(phase_dev) ||
+        !keel::is_finite(init_phase) || !(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc ||
+        !(phase_dev > 0.0) || out.size() < x.size()) {
         return CommStatus::kInvalidArgument;
     }
     const f64 two_pi_fc = kTau * fc;
@@ -241,8 +270,9 @@ CommStatus pm_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 phase_dev, f64 init_phase
 
 CommStatus pm_demod(ArrayRef<f64> y, f64 fc, f64 fs, f64 phase_dev, f64 init_phase,
                     MutArrayRef<f64> out, Allocator* alloc) {
-    if (!(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc || !(phase_dev > 0.0) ||
-        out.size() < y.size()) {
+    if (!keel::is_finite(fs) || !keel::is_finite(fc) || !keel::is_finite(phase_dev) ||
+        !keel::is_finite(init_phase) || !(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc ||
+        !(phase_dev > 0.0) || out.size() < y.size()) {
         return CommStatus::kInvalidArgument;
     }
     if (y.empty()) return CommStatus::kOk;
@@ -269,7 +299,9 @@ CommStatus pm_demod(ArrayRef<f64> y, f64 fc, f64 fs, f64 phase_dev, f64 init_pha
 
 CommStatus am_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 init_phase, f64 carrier_amp,
                   MutArrayRef<f64> out) noexcept {
-    if (!(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc || out.size() < x.size()) {
+    if (!keel::is_finite(fs) || !keel::is_finite(fc) || !keel::is_finite(init_phase) ||
+        !keel::is_finite(carrier_amp) || !(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc ||
+        out.size() < x.size()) {
         return CommStatus::kInvalidArgument;
     }
     const f64 two_pi_fc = kTau * fc;
@@ -283,7 +315,9 @@ CommStatus am_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 init_phase, f64 carrier_a
 
 CommStatus fm_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 freq_dev, f64 init_phase,
                   MutArrayRef<f64> out) noexcept {
-    if (!(fs > 0.0) || fc < 0.0 || fs < 2.0 * fc || !(freq_dev > 0.0) || out.size() < x.size()) {
+    if (!keel::is_finite(fs) || !keel::is_finite(fc) || !keel::is_finite(freq_dev) ||
+        !keel::is_finite(init_phase) || !(fs > 0.0) || fc < 0.0 || fs < 2.0 * fc ||
+        !(freq_dev > 0.0) || out.size() < x.size()) {
         return CommStatus::kInvalidArgument;
     }
     const f64 two_pi_fc = kTau * fc;
@@ -300,8 +334,9 @@ CommStatus fm_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 freq_dev, f64 init_phase,
 
 CommStatus fm_demod(ArrayRef<f64> y, f64 fc, f64 fs, f64 freq_dev, f64 init_phase,
                     MutArrayRef<f64> out, Allocator* alloc) {
-    if (!(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc || !(freq_dev > 0.0) ||
-        out.size() < y.size()) {
+    if (!keel::is_finite(fs) || !keel::is_finite(fc) || !keel::is_finite(freq_dev) ||
+        !keel::is_finite(init_phase) || !(fs > 0.0) || !(fc > 0.0) || fs < 2.0 * fc ||
+        !(freq_dev > 0.0) || out.size() < y.size()) {
         return CommStatus::kInvalidArgument;
     }
     if (y.empty()) return CommStatus::kOk;
@@ -336,7 +371,8 @@ CommStatus fm_demod(ArrayRef<f64> y, f64 fc, f64 fs, f64 freq_dev, f64 init_phas
 
 CommStatus ssb_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 init_phase, bool upper,
                    MutArrayRef<f64> out, Allocator* alloc) {
-    if (!(fs > 0.0) || !(fc > 0.0) || fs <= 2.0 * fc || out.size() < x.size()) {
+    if (!keel::is_finite(fs) || !keel::is_finite(fc) || !keel::is_finite(init_phase) ||
+        !(fs > 0.0) || !(fc > 0.0) || fs <= 2.0 * fc || out.size() < x.size()) {
         return CommStatus::kInvalidArgument;
     }
     if (x.empty()) return CommStatus::kOk;
@@ -360,10 +396,10 @@ CommStatus ssb_mod(ArrayRef<f64> x, f64 fc, f64 fs, f64 init_phase, bool upper,
 
 CommStatus msk_mod_diff(ArrayRef<u8> bits, i32 nsamp, f64 init_phase, MutArrayRef<c64> out,
                         Allocator* alloc) {
-    if (nsamp <= 0) return CommStatus::kInvalidArgument;
+    if (nsamp <= 0 || !keel::is_finite(init_phase)) return CommStatus::kInvalidArgument;
     const usize ns = as<usize>(nsamp);
+    if (out.size() / ns < bits.size()) return CommStatus::kInvalidArgument;
     const usize nout = bits.size() * ns;
-    if (out.size() < nout) return CommStatus::kInvalidArgument;
     if (nout == 0) return CommStatus::kOk;
 
     ArenaTemp scratch = get_scratch(alloc);
@@ -375,9 +411,8 @@ CommStatus msk_mod_diff(ArrayRef<u8> bits, i32 nsamp, f64 init_phase, MutArrayRe
 
     const f64 inv_ns = 1.0 / as<f64>(nsamp);
     for (usize j = 0; j < nout; ++j) {
-        const f64 t_fine = as<f64>(j) * inv_ns;
-        const usize base = as<usize>(keel::floor(t_fine));
-        const f64 frac = t_fine - as<f64>(base);
+        const usize base = j / ns;
+        const f64 frac = as<f64>(j % ns) * inv_ns;
         const f64 interp = x_cum[base] + frac * (x_cum[base + 1u] - x_cum[base]);
         const f64 phase = 0.5 * kPi * interp + init_phase;
         out[j] = c64(keel::cos(phase), keel::sin(phase));
@@ -387,7 +422,8 @@ CommStatus msk_mod_diff(ArrayRef<u8> bits, i32 nsamp, f64 init_phase, MutArrayRe
 
 CommStatus msk_demod_diff(ArrayRef<c64> samples, i32 nsamp, f64 init_phase,
                           MutArrayRef<u8> out_bits, f64* phase_out) noexcept {
-    if (nsamp <= 0 || samples.empty() || (samples.size() % as<usize>(nsamp)) != 0u) {
+    if (nsamp < 2 || !keel::is_finite(init_phase) || samples.empty() ||
+        (samples.size() % as<usize>(nsamp)) != 0u) {
         return CommStatus::kInvalidArgument;
     }
     const usize ns = as<usize>(nsamp);

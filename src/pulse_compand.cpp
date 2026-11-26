@@ -16,13 +16,11 @@ namespace {
 
 CommStatus rcos_design(f64 beta, usize span, usize sps, RcosShape shape,
                        MutArrayRef<f64> out) noexcept {
-    if (!(beta >= 0.0 && beta <= 1.0) || span == 0 || sps == 0) {
+    if (!(beta >= 0.0 && beta <= 1.0) || span == 0 || sps == 0 || out.empty() ||
+        (out.size() - 1u) / sps < span) {
         return CommStatus::kInvalidArgument;
     }
     const usize n = span * sps + 1;
-    if (out.size() < n) {
-        return CommStatus::kInvalidArgument;
-    }
 
     const f64 dt = 1.0 / as<f64>(sps);
     const f64 half = 0.5 * as<f64>(n - 1);
@@ -49,11 +47,11 @@ CommStatus rcos_design(f64 beta, usize span, usize sps, RcosShape shape,
                 const f64 c = keel::cos(kPi / (4.0 * beta));
                 v = a * ((1.0 + 2.0 / kPi) * s + (1.0 - 2.0 / kPi) * c);
             } else {
-                const f64 num = keel::cos((1.0 + beta) * kPi * t) +
-                                keel::sin((1.0 - beta) * kPi * t) / (4.0 * beta * t);
+                const f64 num = (4.0 * beta / kPi) * keel::cos((1.0 + beta) * kPi * t) +
+                                (1.0 - beta) * sinc_pi((1.0 - beta) * t);
                 const f64 term = 4.0 * beta * t;
                 const f64 den = 1.0 - term * term;
-                v = (4.0 * beta / kPi) * num / den;
+                v = num / den;
             }
         }
         out[i] = v;
@@ -70,24 +68,21 @@ CommStatus rcos_design(f64 beta, usize span, usize sps, RcosShape shape,
 }
 
 CommStatus gauss_design(f64 bt, usize span, usize sps, MutArrayRef<f64> out) noexcept {
-    if (!(bt > 0.0) || !keel::is_finite(bt) || span == 0 || sps == 0) {
+    if (!(bt > 0.0) || !keel::is_finite(bt) || span == 0 || sps == 0 || out.empty() ||
+        (out.size() - 1u) / sps < span) {
         return CommStatus::kInvalidArgument;
     }
     const usize n = span * sps + 1;
-    if (out.size() < n) {
-        return CommStatus::kInvalidArgument;
-    }
 
     const f64 centre = 0.5 * as<f64>(1 + n);
-    const f64 alpha = keel::sqrt(kLn2 * 0.5) / bt;
-    const f64 pre = keel::sqrt(kPi) / alpha;
+    const f64 inv_sigma = kPi * bt / keel::sqrt(kLn2 * 0.5);
     const f64 sps_f = as<f64>(sps);
 
     f64 sum = 0.0;
     for (usize k = 1; k <= n; ++k) {
         const f64 t = (as<f64>(k) - centre) / sps_f;
-        const f64 arg = kPi * t / alpha;
-        const f64 v = pre * keel::exp(-(arg * arg));
+        const f64 arg = t * inv_sigma;
+        const f64 v = keel::exp(-(arg * arg));
         out[k - 1] = v;
         sum += v;
     }
@@ -102,25 +97,29 @@ CommStatus gauss_design(f64 bt, usize span, usize sps, MutArrayRef<f64> out) noe
 
 CommStatus compand(ArrayRef<f64> in, f64 param, f64 peak_v, CompandMode mode,
                    MutArrayRef<f64> out) noexcept {
-    if (!(param > 0.0) || !(peak_v > 0.0) || out.size() < in.size()) {
+    if (!keel::is_finite(param) || !keel::is_finite(peak_v) || !(param > 0.0) || !(peak_v > 0.0) ||
+        out.size() < in.size()) {
+        return CommStatus::kInvalidArgument;
+    }
+    if ((mode == CompandMode::kACompress || mode == CompandMode::kAExpand) && param < 1.0) {
         return CommStatus::kInvalidArgument;
     }
     const usize n = in.size();
     switch (mode) {
         case CompandMode::kMuCompress: {
-            const f64 log_mu = keel::log(1.0 + param);
+            const f64 log_mu = keel::log1p(param);
             for (usize i = 0; i < n; ++i) {
                 const f64 xi = in[i];
-                const f64 mag = peak_v * keel::log(1.0 + param * keel::abs(xi) / peak_v) / log_mu;
+                const f64 mag = peak_v * keel::log1p(param * keel::abs(xi) / peak_v) / log_mu;
                 out[i] = (xi >= 0.0) ? mag : -mag;
             }
             break;
         }
         case CompandMode::kMuExpand: {
-            const f64 log_mu = keel::log(1.0 + param);
+            const f64 log_mu = keel::log1p(param);
             for (usize i = 0; i < n; ++i) {
                 const f64 yi = in[i];
-                const f64 mag = (peak_v / param) * (keel::exp(keel::abs(yi) / peak_v * log_mu) - 1.0);
+                const f64 mag = (peak_v / param) * keel::expm1(keel::abs(yi) / peak_v * log_mu);
                 out[i] = (yi >= 0.0) ? mag : -mag;
             }
             break;

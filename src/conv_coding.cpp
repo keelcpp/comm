@@ -14,9 +14,15 @@ inline bool octal_to_decimal(u64 oct, u64& out) noexcept {
     while (oct > 0ULL) {
         const u64 digit = oct % 10ULL;
         if (digit > 7ULL) return false;
-        result += digit * mult;
-        mult *= 8ULL;
+        if (digit > Limits<u64>::kMax / mult) return false;
+        const u64 term = digit * mult;
+        if (result > Limits<u64>::kMax - term) return false;
+        result += term;
         oct /= 10ULL;
+        if (oct > 0ULL) {
+            if (mult > Limits<u64>::kMax / 8ULL) return false;
+            mult *= 8ULL;
+        }
     }
     out = result;
     return true;
@@ -52,8 +58,9 @@ CommStatus poly2trellis(i32 constraint_len, ArrayRef<u64> octal_generators, Trel
     const usize n = octal_generators.size();
     ArenaTemp scratch = get_scratch(alloc);
     Array<u64> g(n, 0ULL, scratch.allocator());
+    const u64 max_gen = 1ULL << as<u32>(constraint_len);
     for (usize i = 0; i < n; ++i) {
-        if (!octal_to_decimal(octal_generators[i], g[i])) {
+        if (!octal_to_decimal(octal_generators[i], g[i]) || g[i] >= max_gen) {
             return CommStatus::kInvalidArgument;
         }
     }
@@ -88,13 +95,13 @@ CommStatus convenc(ArrayRef<u8> msg_bits, ArrayRef<u32> next_states_col_major,
                    ArrayRef<u32> outputs_col_major, usize num_states, i32 out_bits_per_sym,
                    MutArrayRef<u8> out_bits) noexcept {
     if (num_states == 0 || out_bits_per_sym <= 0 || out_bits_per_sym > 31 ||
-        next_states_col_major.size() < num_states * 2u ||
-        outputs_col_major.size() < num_states * 2u) {
+        next_states_col_major.size() / 2u < num_states ||
+        outputs_col_major.size() / 2u < num_states) {
         return CommStatus::kInvalidArgument;
     }
     const usize n = as<usize>(out_bits_per_sym);
     const usize l = msg_bits.size();
-    if (out_bits.size() < l * n) {
+    if (out_bits.size() / n < l) {
         return CommStatus::kInvalidArgument;
     }
 
@@ -117,8 +124,8 @@ CommStatus vitdec_hard(ArrayRef<u8> code_bits, ArrayRef<u32> next_states_col_maj
                        ArrayRef<u32> outputs_col_major, usize num_states, i32 out_bits_per_sym,
                        bool terminated, MutArrayRef<u8> out_bits, Allocator* alloc) {
     if (num_states == 0 || out_bits_per_sym <= 0 || out_bits_per_sym > 31 ||
-        next_states_col_major.size() < num_states * 2u ||
-        outputs_col_major.size() < num_states * 2u) {
+        next_states_col_major.size() / 2u < num_states ||
+        outputs_col_major.size() / 2u < num_states) {
         return CommStatus::kInvalidArgument;
     }
     const usize n = as<usize>(out_bits_per_sym);
@@ -126,7 +133,7 @@ CommStatus vitdec_hard(ArrayRef<u8> code_bits, ArrayRef<u32> next_states_col_maj
         return CommStatus::kInvalidArgument;
     }
     const usize l = code_bits.size() / n;
-    if (out_bits.size() < l) {
+    if (out_bits.size() < l || (l > 0u && l > Limits<usize>::kMax / num_states)) {
         return CommStatus::kInvalidArgument;
     }
     if (l == 0) return CommStatus::kOk;
@@ -157,7 +164,8 @@ CommStatus vitdec_hard(ArrayRef<u8> code_bits, ArrayRef<u32> next_states_col_maj
                 const usize ns = as<usize>(next_states_col_major[idx]);
                 if (ns >= num_states) return CommStatus::kInvalidArgument;
                 const u32 ow = outputs_col_major[idx];
-                const u32 cand = metric[s] + popcount_u32(rsym[t] ^ ow);
+                const u32 dist = popcount_u32(rsym[t] ^ ow);
+                const u32 cand = (metric[s] > k_inf - 1u - dist) ? (k_inf - 1u) : (metric[s] + dist);
                 if (cand < new_metric[ns]) {
                     new_metric[ns] = cand;
                     prev_state[t * num_states + ns] = as<i32>(s);
